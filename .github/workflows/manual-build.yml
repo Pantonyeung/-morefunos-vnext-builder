@@ -10,9 +10,10 @@ on:
       build_kind:
         description: 'Manual gate to execute'
         required: true
-        default: compatibility-probe
+        default: mpc1
         type: choice
         options:
+          - mpc1
           - foundation
           - compatibility-probe
 
@@ -43,7 +44,7 @@ jobs:
             exit 1
           fi
           case "$BUILD_KIND" in
-            foundation|compatibility-probe) ;;
+            mpc1|foundation|compatibility-probe) ;;
             *) echo "Unsupported build_kind: $BUILD_KIND" >&2; exit 1 ;;
           esac
 
@@ -95,7 +96,8 @@ jobs:
           test -n "${ANDROID_HOME:-}"
           test -f "$ANDROID_HOME/platforms/android-36/android.jar"
           test -d "$ANDROID_HOME/build-tools/36.0.0"
-          echo "Android SDK 36 + Build-tools 36.0.0 present."
+          test -x "$ANDROID_HOME/build-tools/36.0.0/apksigner"
+          echo "Android SDK 36 + Build-tools 36.0.0 + apksigner present."
 
       - name: Execute private source build without public source logs
         id: build_core
@@ -126,8 +128,65 @@ jobs:
           run_stage "android-test-assemble" gradle -p native/android-smt testDebugUnitTest assembleDebug --stacktrace || exit 1
           echo "Private build core: PASS"
 
+      - name: Stable-sign generated APK after private source build
+        if: steps.build_core.outcome == 'success'
+        id: stable_signing
+        shell: bash
+        env:
+          VNEXT_ANDROID_KEYSTORE_B64: ${{ secrets.VNEXT_ANDROID_KEYSTORE_B64 }}
+          VNEXT_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.VNEXT_ANDROID_KEYSTORE_PASSWORD }}
+          VNEXT_ANDROID_KEY_ALIAS: ${{ secrets.VNEXT_ANDROID_KEY_ALIAS }}
+          VNEXT_ANDROID_KEY_PASSWORD: ${{ secrets.VNEXT_ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for required_name in \
+            VNEXT_ANDROID_KEYSTORE_B64 \
+            VNEXT_ANDROID_KEYSTORE_PASSWORD \
+            VNEXT_ANDROID_KEY_ALIAS \
+            VNEXT_ANDROID_KEY_PASSWORD; do
+            if [[ -z "${!required_name:-}" ]]; then
+              echo "Stable app-signing configuration is incomplete: missing $required_name" >&2
+              exit 1
+            fi
+          done
+
+          KEYSTORE="$RUNNER_TEMP/morefunos-vnext-app-signing.p12"
+          APK="$GITHUB_WORKSPACE/source/native/android-smt/app/build/outputs/apk/debug/app-debug.apk"
+          APKSIGNER="$ANDROID_HOME/build-tools/36.0.0/apksigner"
+          test -f "$APK"
+
+          printf '%s' "$VNEXT_ANDROID_KEYSTORE_B64" | base64 --decode > "$KEYSTORE"
+          chmod 600 "$KEYSTORE"
+          test -s "$KEYSTORE"
+
+          "$APKSIGNER" sign \
+            --ks "$KEYSTORE" \
+            --ks-type PKCS12 \
+            --ks-key-alias "$VNEXT_ANDROID_KEY_ALIAS" \
+            --ks-pass env:VNEXT_ANDROID_KEYSTORE_PASSWORD \
+            --key-pass env:VNEXT_ANDROID_KEY_PASSWORD \
+            "$APK"
+
+          VERIFY_OUTPUT="$($APKSIGNER verify --verbose --print-certs "$APK")"
+          CERT_SHA256="$(printf '%s\n' "$VERIFY_OUTPUT" \
+            | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' \
+            | head -n 1 \
+            | tr -d ':[:space:]' \
+            | tr 'A-F' 'a-f')"
+          SIGNER_COUNT="$(printf '%s\n' "$VERIFY_OUTPUT" \
+            | grep -c '^Signer #[0-9][0-9]* certificate SHA-256 digest:' || true)"
+
+          test "$SIGNER_COUNT" = "1"
+          if [[ ! "$CERT_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "Stable APK signing certificate digest could not be verified" >&2
+            exit 1
+          fi
+
+          echo "certificate_sha256=$CERT_SHA256" >> "$GITHUB_OUTPUT"
+          echo "Stable APK signing: PASS"
+
       - name: Generate immutable build metadata
-        if: steps.build_core.outcome == 'success' && inputs.build_kind == 'compatibility-probe'
+        if: steps.build_core.outcome == 'success' && steps.stable_signing.outcome == 'success' && (inputs.build_kind == 'mpc1' || inputs.build_kind == 'compatibility-probe')
         id: metadata
         working-directory: source
         shell: bash
@@ -135,6 +194,7 @@ jobs:
           BUILDER_SHA: ${{ github.sha }}
           BUILDER_RUN_ID: ${{ github.run_id }}
           BUILDER_REPO: ${{ github.repository }}
+          APP_SIGNING_CERT_SHA256: ${{ steps.stable_signing.outputs.certificate_sha256 }}
         run: |
           set -euo pipefail
           APK="native/android-smt/app/build/outputs/apk/debug/app-debug.apk"
@@ -145,7 +205,7 @@ jobs:
           APK_FILENAME="MoreFunOS-SMT-${VERSION_NAME}-${REQUESTED_SOURCE_SHA:0:12}.apk"
           cp "$APK" "$APK_FILENAME"
           printf '%s  %s\n' "$APK_SHA256" "$APK_FILENAME" > SHA256SUMS
-          export VERSION_NAME MIN_SDK APK_SHA256 APK_FILENAME
+          export VERSION_NAME MIN_SDK APK_SHA256 APK_FILENAME APP_SIGNING_CERT_SHA256
           node <<'NODE'
           const fs = require('fs');
           const metadata = {
@@ -156,6 +216,7 @@ jobs:
             minSdk: Number(process.env.MIN_SDK),
             apkFilename: process.env.APK_FILENAME,
             apkSha256: process.env.APK_SHA256,
+            appSigningCertificateSha256: process.env.APP_SIGNING_CERT_SHA256,
             builderRepository: process.env.BUILDER_REPO,
             builderSha: process.env.BUILDER_SHA,
             builderRunId: process.env.BUILDER_RUN_ID,
@@ -168,13 +229,14 @@ jobs:
           echo "apk_filename=$APK_FILENAME" >> "$GITHUB_OUTPUT"
 
       - name: Deliver APK privately to source repository release
-        if: steps.build_core.outcome == 'success' && inputs.build_kind == 'compatibility-probe'
+        if: steps.build_core.outcome == 'success' && steps.stable_signing.outcome == 'success' && (inputs.build_kind == 'mpc1' || inputs.build_kind == 'compatibility-probe')
         working-directory: source
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.VNEXT_DELIVERY_WRITE_TOKEN }}
           VERSION_NAME: ${{ steps.metadata.outputs.version_name }}
           APK_FILENAME: ${{ steps.metadata.outputs.apk_filename }}
+          APP_SIGNING_CERT_SHA256: ${{ steps.stable_signing.outputs.certificate_sha256 }}
         run: |
           set -euo pipefail
           TAG="builder-${VERSION_NAME}-${REQUESTED_SOURCE_SHA:0:12}-run-${GITHUB_RUN_ID}"
@@ -185,7 +247,7 @@ jobs:
             --repo "$SOURCE_REPO" \
             --target "$REQUESTED_SOURCE_SHA" \
             --title "SMT ${VERSION_NAME} | ${REQUESTED_SOURCE_SHA:0:12}" \
-            --notes "Manual build from immutable source ${REQUESTED_SOURCE_SHA}. Builder ${GITHUB_REPOSITORY}@${GITHUB_SHA}, run ${GITHUB_RUN_ID}. Build output only; not Device/Hardware/Operational PASS." \
+            --notes "Manual build from immutable source ${REQUESTED_SOURCE_SHA}. Stable app-signing certificate SHA-256: ${APP_SIGNING_CERT_SHA256}. Builder ${GITHUB_REPOSITORY}@${GITHUB_SHA}, run ${GITHUB_RUN_ID}. Build output only; not Device/Hardware/Operational PASS." \
             --prerelease
 
       - name: Deliver failed build log privately
@@ -221,6 +283,11 @@ jobs:
             --title "FAILED manual build | ${REQUESTED_SOURCE_SHA:0:12}" \
             --notes "Private diagnostics for failed manual builder run ${GITHUB_RUN_ID}. Raw private-source build logs were intentionally withheld from the public Actions log." \
             --prerelease
+
+      - name: Remove temporary signing key
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/morefunos-vnext-app-signing.p12"
 
       - name: Fail job after private diagnostics delivery
         if: steps.build_core.outcome == 'failure'
