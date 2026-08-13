@@ -2,6 +2,7 @@ import fs from 'node:fs';
 
 const workflowPath = '.github/workflows/manual-build.yml';
 const text = fs.readFileSync(workflowPath, 'utf8');
+const expectedSigningCertificate = '69ca37015d3c4680e39a6bbe795e617f86ccce6ff2983661eba3b12a90ce2ee6';
 
 const required = [
   'workflow_dispatch:',
@@ -14,6 +15,8 @@ const required = [
   'VNEXT_ANDROID_KEYSTORE_PASSWORD',
   'VNEXT_ANDROID_KEY_ALIAS',
   'VNEXT_ANDROID_KEY_PASSWORD',
+  'EXPECTED_APP_SIGNING_CERT_SHA256',
+  expectedSigningCertificate,
   'apksigner',
   '--print-certs',
   'certificate_sha256=',
@@ -32,6 +35,10 @@ const privateBuildIndex = text.indexOf('Execute private source build without pub
 const signingSecretIndex = text.indexOf('VNEXT_ANDROID_KEYSTORE_B64');
 if (privateBuildIndex < 0 || signingSecretIndex < 0 || signingSecretIndex < privateBuildIndex) {
   throw new Error('BUILDER_POLICY_SIGNING_SECRETS_MUST_NOT_PRECEDE_PRIVATE_SOURCE_BUILD');
+}
+
+if (!/CERT_SHA256[\s\S]*EXPECTED_APP_SIGNING_CERT_SHA256/.test(text)) {
+  throw new Error('BUILDER_POLICY_SIGNING_CERTIFICATE_IDENTITY_NOT_ENFORCED');
 }
 
 const forbiddenPatterns = [
