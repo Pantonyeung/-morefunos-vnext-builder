@@ -51,6 +51,11 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Setup Node 22
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
       - name: Verify builder remains manual-only
         run: node scripts/verify-builder-policy.mjs
 
@@ -70,11 +75,6 @@ jobs:
           ACTUAL_SOURCE_SHA="$(git -C source rev-parse HEAD)"
           test "$ACTUAL_SOURCE_SHA" = "${REQUESTED_SOURCE_SHA,,}"
           echo "Verified immutable private source SHA: $ACTUAL_SOURCE_SHA"
-
-      - name: Setup Node 22
-        uses: actions/setup-node@v7
-        with:
-          node-version: '22'
 
       - name: Setup Java 21
         uses: actions/setup-java@v5
@@ -96,24 +96,37 @@ jobs:
           test -d "$ANDROID_HOME/build-tools/36.0.0"
           echo "Android SDK 36 + Build-tools 36.0.0 present."
 
-      - name: Install locked dependencies
-        working-directory: source
-        run: npm ci --no-audit --no-fund
+      - name: Execute private source build without public source logs
+        id: build_core
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -u
+          LOG="$GITHUB_WORKSPACE/private-build.log"
+          : > "$LOG"
 
-      - name: Full software preflight
-        working-directory: source
-        run: npm run check:foundation
+          run_stage() {
+            local stage="$1"
+            shift
+            printf '\n== %s ==\n' "$stage" >> "$LOG"
+            if "$@" >> "$LOG" 2>&1; then
+              echo "$stage: PASS"
+              return 0
+            fi
+            echo "$stage: FAIL (details withheld from public log)"
+            echo "failed_stage=$stage" >> "$GITHUB_OUTPUT"
+            return 1
+          }
 
-      - name: Capacitor sync
-        working-directory: source
-        run: npm run cap:sync
-
-      - name: Android unit tests and assemble
-        working-directory: source
-        run: gradle -p native/android-smt testDebugUnitTest assembleDebug --stacktrace
+          cd source
+          run_stage "locked-install" npm ci --no-audit --no-fund || exit 1
+          run_stage "foundation-preflight" npm run check:foundation || exit 1
+          run_stage "capacitor-sync" npm run cap:sync || exit 1
+          run_stage "android-test-assemble" gradle -p native/android-smt testDebugUnitTest assembleDebug --stacktrace || exit 1
+          echo "Private build core: PASS"
 
       - name: Generate immutable build metadata
-        if: inputs.build_kind == 'compatibility-probe'
+        if: steps.build_core.outcome == 'success' && inputs.build_kind == 'compatibility-probe'
         id: metadata
         working-directory: source
         shell: bash
@@ -154,7 +167,7 @@ jobs:
           echo "apk_filename=$APK_FILENAME" >> "$GITHUB_OUTPUT"
 
       - name: Deliver APK privately to source repository release
-        if: inputs.build_kind == 'compatibility-probe'
+        if: steps.build_core.outcome == 'success' && inputs.build_kind == 'compatibility-probe'
         working-directory: source
         shell: bash
         env:
@@ -173,3 +186,44 @@ jobs:
             --title "SMT ${VERSION_NAME} | ${REQUESTED_SOURCE_SHA:0:12}" \
             --notes "Manual build from immutable source ${REQUESTED_SOURCE_SHA}. Builder ${GITHUB_REPOSITORY}@${GITHUB_SHA}, run ${GITHUB_RUN_ID}. Build output only; not Device/Hardware/Operational PASS." \
             --prerelease
+
+      - name: Deliver failed build log privately
+        if: steps.build_core.outcome == 'failure'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.VNEXT_DELIVERY_WRITE_TOKEN }}
+          FAILED_STAGE: ${{ steps.build_core.outputs.failed_stage }}
+        run: |
+          set -euo pipefail
+          export FAILED_STAGE
+          node <<'NODE'
+          const fs = require('fs');
+          const metadata = {
+            sourceRepository: process.env.SOURCE_REPO,
+            sourceSha: process.env.REQUESTED_SOURCE_SHA.toLowerCase(),
+            buildKind: process.env.BUILD_KIND,
+            builderRepository: process.env.GITHUB_REPOSITORY,
+            builderSha: process.env.GITHUB_SHA,
+            builderRunId: process.env.GITHUB_RUN_ID,
+            failedStage: process.env.FAILED_STAGE || 'unknown',
+            builtAtUtc: new Date().toISOString(),
+            status: 'FAILED'
+          };
+          fs.writeFileSync('build-failure-metadata.json', JSON.stringify(metadata, null, 2) + '\n');
+          NODE
+          TAG="builder-failure-${REQUESTED_SOURCE_SHA:0:12}-run-${GITHUB_RUN_ID}"
+          gh release create "$TAG" \
+            "$GITHUB_WORKSPACE/private-build.log" \
+            build-failure-metadata.json \
+            --repo "$SOURCE_REPO" \
+            --target "$REQUESTED_SOURCE_SHA" \
+            --title "FAILED manual build | ${REQUESTED_SOURCE_SHA:0:12}" \
+            --notes "Private diagnostics for failed manual builder run ${GITHUB_RUN_ID}. Raw private-source build logs were intentionally withheld from the public Actions log." \
+            --prerelease
+
+      - name: Fail job after private diagnostics delivery
+        if: steps.build_core.outcome == 'failure'
+        shell: bash
+        run: |
+          echo "Private source build failed. Full diagnostics were delivered only to the private source repository."
+          exit 1
