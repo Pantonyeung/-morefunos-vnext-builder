@@ -33,6 +33,7 @@ jobs:
       SOURCE_REPO: Pantonyeung/morefunos-vnext
       REQUESTED_SOURCE_SHA: ${{ inputs.source_sha }}
       BUILD_KIND: ${{ inputs.build_kind }}
+      EXPECTED_APP_SIGNING_CERT_SHA256: 69ca37015d3c4680e39a6bbe795e617f86ccce6ff2983661eba3b12a90ce2ee6
 
     steps:
       - name: Validate immutable build request
@@ -47,6 +48,10 @@ jobs:
             mpc1|foundation|compatibility-probe) ;;
             *) echo "Unsupported build_kind: $BUILD_KIND" >&2; exit 1 ;;
           esac
+          if [[ ! "$EXPECTED_APP_SIGNING_CERT_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "Expected app-signing certificate identity is invalid" >&2
+            exit 1
+          fi
 
       - name: Checkout builder definition
         uses: actions/checkout@v7
@@ -181,9 +186,13 @@ jobs:
             echo "Stable APK signing certificate digest could not be verified" >&2
             exit 1
           fi
+          if [[ "$CERT_SHA256" != "$EXPECTED_APP_SIGNING_CERT_SHA256" ]]; then
+            echo "Stable APK signing certificate identity mismatch" >&2
+            exit 1
+          fi
 
           echo "certificate_sha256=$CERT_SHA256" >> "$GITHUB_OUTPUT"
-          echo "Stable APK signing: PASS"
+          echo "Stable APK signing identity verified: PASS"
 
       - name: Generate immutable build metadata
         if: steps.build_core.outcome == 'success' && steps.stable_signing.outcome == 'success' && (inputs.build_kind == 'mpc1' || inputs.build_kind == 'compatibility-probe')
