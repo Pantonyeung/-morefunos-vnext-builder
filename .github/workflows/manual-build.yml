@@ -51,6 +51,9 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Verify builder remains manual-only
+        run: node scripts/verify-builder-policy.mjs
+
       - name: Checkout exact private MoreFunOS source SHA
         uses: actions/checkout@v7
         with:
