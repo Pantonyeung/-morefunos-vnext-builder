@@ -5,10 +5,12 @@ const text = fs.readFileSync(workflowPath, 'utf8');
 
 const required = [
   'workflow_dispatch:',
+  "if: github.actor == 'Pantonyeung'",
   'repository: Pantonyeung/morefunos-vnext',
   'persist-credentials: false',
   'VNEXT_SOURCE_READ_TOKEN',
-  'VNEXT_DELIVERY_WRITE_TOKEN'
+  'VNEXT_DELIVERY_WRITE_TOKEN',
+  'details withheld from public log'
 ];
 
 for (const token of required) {
