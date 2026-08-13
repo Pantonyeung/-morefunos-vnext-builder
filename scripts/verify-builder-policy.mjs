@@ -10,6 +10,15 @@ const required = [
   'persist-credentials: false',
   'VNEXT_SOURCE_READ_TOKEN',
   'VNEXT_DELIVERY_WRITE_TOKEN',
+  'VNEXT_ANDROID_KEYSTORE_B64',
+  'VNEXT_ANDROID_KEYSTORE_PASSWORD',
+  'VNEXT_ANDROID_KEY_ALIAS',
+  'VNEXT_ANDROID_KEY_PASSWORD',
+  'apksigner',
+  '--print-certs',
+  'certificate_sha256=',
+  'Stable APK signing: PASS',
+  'Remove temporary signing key',
   'details withheld from public log'
 ];
 
@@ -17,6 +26,12 @@ for (const token of required) {
   if (!text.includes(token)) {
     throw new Error(`BUILDER_POLICY_REQUIRED_TOKEN_MISSING:${token}`);
   }
+}
+
+const privateBuildIndex = text.indexOf('Execute private source build without public source logs');
+const signingSecretIndex = text.indexOf('VNEXT_ANDROID_KEYSTORE_B64');
+if (privateBuildIndex < 0 || signingSecretIndex < 0 || signingSecretIndex < privateBuildIndex) {
+  throw new Error('BUILDER_POLICY_SIGNING_SECRETS_MUST_NOT_PRECEDE_PRIVATE_SOURCE_BUILD');
 }
 
 const forbiddenPatterns = [
@@ -27,6 +42,9 @@ const forbiddenPatterns = [
   /^\s+repository_dispatch:\s*$/m,
   /actions\/upload-artifact@/,
   /repository:\s*\$\{\{/,
+  /\bset\s+-x\b/,
+  /echo\s+['"]?\$VNEXT_ANDROID_/,
+  /printf\s+['"]?%s['"]?\s+['"]?\$VNEXT_ANDROID_(?!KEYSTORE_B64)/
 ];
 
 for (const pattern of forbiddenPatterns) {
