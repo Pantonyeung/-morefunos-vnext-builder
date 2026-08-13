@@ -33,7 +33,7 @@ jobs:
       SOURCE_REPO: Pantonyeung/morefunos-vnext
       REQUESTED_SOURCE_SHA: ${{ inputs.source_sha }}
       BUILD_KIND: ${{ inputs.build_kind }}
-      EXPECTED_APP_SIGNING_CERT_SHA256: 69ca37015d3c4680e39a6bbe795e617f86ccce6ff2983661eba3b12a90ce2ee6
+      EXPECTED_APP_SIGNING_CERT_SHA256: 8f66270541c419a90ae0e8b94a2c7796e13d5c06805b0919ce3f7f5b3602857a
 
     steps:
       - name: Validate immutable build request
