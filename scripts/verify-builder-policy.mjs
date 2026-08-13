@@ -17,10 +17,11 @@ const required = [
   'VNEXT_ANDROID_KEY_PASSWORD',
   'EXPECTED_APP_SIGNING_CERT_SHA256',
   expectedSigningCertificate,
+  'Stable APK signing certificate identity mismatch',
   'apksigner',
   '--print-certs',
   'certificate_sha256=',
-  'Stable APK signing: PASS',
+  'Stable APK signing identity verified: PASS',
   'Remove temporary signing key',
   'details withheld from public log'
 ];
