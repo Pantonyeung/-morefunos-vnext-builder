@@ -2,7 +2,7 @@ import fs from 'node:fs';
 
 const workflowPath = '.github/workflows/manual-build.yml';
 const text = fs.readFileSync(workflowPath, 'utf8');
-const expectedSigningCertificate = '69ca37015d3c4680e39a6bbe795e617f86ccce6ff2983661eba3b12a90ce2ee6';
+const expectedSigningCertificate = '8f66270541c419a90ae0e8b94a2c7796e13d5c06805b0919ce3f7f5b3602857a';
 
 const required = [
   'workflow_dispatch:',
